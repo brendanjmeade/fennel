@@ -9,6 +9,8 @@ dependencies = [
     "trame>=3.12",
     "trame-vuetify",
     "trame-vtk",
+    "numpy",
+    "pandas",
 ]
 requires-python = ">=3.9"
 readme = "README.rst"
