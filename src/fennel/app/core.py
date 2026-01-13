@@ -1,11 +1,26 @@
 import numpy as np
 import pandas as pd
 from pathlib import Path
+import sys
 
 from trame.app import TrameApp
 from trame.decorators import change, controller
 from trame.ui.vuetify3 import SinglePageLayout
 from trame.widgets import vuetify3, html
+
+# Import pydeck and trame-deckgl
+import pydeck as pdk
+from trame_deckgl.widgets import deckgl
+
+# Import mapbox token
+try:
+    mapbox_token_path = Path(__file__).parent.parent.parent.parent / "result_viewer" / "mapbox_token.py"
+    sys.path.insert(0, str(mapbox_token_path.parent))
+    from mapbox_token import mapbox_access_token
+    HAS_MAPBOX_TOKEN = mapbox_access_token and mapbox_access_token != "INSERT_TOKEN_HERE"
+except ImportError:
+    mapbox_access_token = None
+    HAS_MAPBOX_TOKEN = False
 
 
 # ---------------------------------------------------------
@@ -33,6 +48,24 @@ def wrap2360(lon):
     """Wrap longitude to 0-360 range"""
     lon[np.where(lon < 0.0)] += 360.0
     return lon
+
+
+def sph2cart(lon, lat, radius):
+    """Convert spherical coordinates to Cartesian"""
+    lon_rad = np.deg2rad(lon)
+    lat_rad = np.deg2rad(lat)
+    x = radius * np.cos(lat_rad) * np.cos(lon_rad)
+    y = radius * np.cos(lat_rad) * np.sin(lon_rad)
+    z = radius * np.sin(lat_rad)
+    return x, y, z
+
+
+def cart2sph(x, y, z):
+    """Convert Cartesian coordinates to spherical"""
+    azimuth = np.arctan2(y, x)
+    elevation = np.arctan2(z, np.sqrt(x**2 + y**2))
+    r = np.sqrt(x**2 + y**2 + z**2)
+    return azimuth, elevation, r
 
 
 # ---------------------------------------------------------
@@ -94,21 +127,178 @@ class MyTrameApp(TrameApp):
         # Shared controls
         self.state.show_res_compare = False
 
+        # Map state
+        self.state.map_latitude = 37.0
+        self.state.map_longitude = -122.0
+        self.state.map_zoom = 6
+        self.state.map_pitch = 0
+        self.state.map_bearing = 0
+
         # build ui
         self._build_ui()
+
+    def _initialize_map(self, **kwargs):
+        """Initialize the map with default view"""
+        deck = pdk.Deck(
+            map_provider="mapbox" if HAS_MAPBOX_TOKEN else "carto",
+            map_style="mapbox://styles/mapbox/light-v9" if HAS_MAPBOX_TOKEN else pdk.map_styles.LIGHT,
+            initial_view_state=pdk.ViewState(
+                latitude=self.state.map_latitude,
+                longitude=self.state.map_longitude,
+                zoom=self.state.map_zoom,
+                pitch=self.state.map_pitch,
+                bearing=self.state.map_bearing,
+            ),
+            layers=[],
+        )
+        self.ctrl.deck_update(deck)
+
+    def _load_data(self, folder_number):
+        """Load earthquake data from a folder"""
+        # TODO: Replace with proper folder selection dialog
+        # Hardcoded path for now
+        base_path = Path(__file__).parent.parent.parent.parent / "result_viewer"
+        folder_name = base_path / "0000000157"
+
+        # Update folder display
+        folder_path_var = f"folder_{folder_number}_path"
+        self.state[folder_path_var] = folder_name.name
+
+        # Read CSV files
+        station = pd.read_csv(folder_name / "model_station.csv")
+        segment = pd.read_csv(folder_name / "model_segment.csv")
+        meshes = pd.read_csv(folder_name / "model_meshes.csv")
+
+        # Calculate residual magnitude
+        resmag = np.sqrt(
+            np.power(station.model_east_vel_residual, 2)
+            + np.power(station.model_north_vel_residual, 2)
+        )
+
+        # Convert station coordinates to Web Mercator
+        lon_station = station.lon.values
+        lat_station = station.lat.values
+        x_station, y_station = wgs84_to_web_mercator(lon_station, lat_station)
+
+        # Convert segment coordinates to Web Mercator
+        lon1_seg = segment.lon1.values
+        lat1_seg = segment.lat1.values
+        lon2_seg = segment.lon2.values
+        lat2_seg = segment.lat2.values
+        x1_seg, y1_seg = wgs84_to_web_mercator(lon1_seg, lat1_seg)
+        x2_seg, y2_seg = wgs84_to_web_mercator(lon2_seg, lat2_seg)
+
+        # Process meshes (TDE)
+        lon1_mesh = meshes["lon1"].values.copy()
+        lat1_mesh = meshes["lat1"].values
+        dep1_mesh = meshes["dep1"].values
+        lon2_mesh = meshes["lon2"].values.copy()
+        lat2_mesh = meshes["lat2"].values
+        dep2_mesh = meshes["dep2"].values
+        lon3_mesh = meshes["lon3"].values.copy()
+        lat3_mesh = meshes["lat3"].values
+        dep3_mesh = meshes["dep3"].values
+        mesh_idx = meshes["mesh_idx"].values
+
+        # Wrap longitude to 0-360
+        lon1_mesh[lon1_mesh < 0] += 360
+        lon2_mesh[lon2_mesh < 0] += 360
+        lon3_mesh[lon3_mesh < 0] += 360
+
+        # Calculate element geometry for steep dipping meshes
+        tri_leg1 = np.transpose([
+            np.deg2rad(lon2_mesh - lon1_mesh),
+            np.deg2rad(lat2_mesh - lat1_mesh),
+            (1 + KM2M * dep2_mesh / RADIUS_EARTH) - (1 + KM2M * dep1_mesh / RADIUS_EARTH),
+        ])
+        tri_leg2 = np.transpose([
+            np.deg2rad(lon3_mesh - lon1_mesh),
+            np.deg2rad(lat3_mesh - lat1_mesh),
+            (1 + KM2M * dep3_mesh / RADIUS_EARTH) - (1 + KM2M * dep1_mesh / RADIUS_EARTH),
+        ])
+        norm_vec = np.cross(tri_leg1, tri_leg2)
+        tri_area = np.linalg.norm(norm_vec, axis=1)
+        azimuth, elevation, r = cart2sph(norm_vec[:, 0], norm_vec[:, 1], norm_vec[:, 2])
+        strike = wrap2360(-np.rad2deg(azimuth))
+        dip = 90 - np.rad2deg(elevation)
+        dip[dip > 90] = 180.0 - dip[dip > 90]
+
+        # Project steeply dipping meshes
+        mesh_list = np.unique(mesh_idx)
+        proj_mesh_flag = np.zeros_like(mesh_list)
+        for i in mesh_list:
+            this_mesh_els = mesh_idx == i
+            this_mesh_dip = np.mean(dip[this_mesh_els])
+            if this_mesh_dip > 75:
+                proj_mesh_flag[i] = 1
+                dip_dir = np.mean(np.deg2rad(strike[this_mesh_els] + 90))
+                lon1_mesh[this_mesh_els] += np.sin(dip_dir) * np.rad2deg(
+                    np.abs(KM2M * dep1_mesh[this_mesh_els] / RADIUS_EARTH)
+                )
+                lat1_mesh[this_mesh_els] += np.cos(dip_dir) * np.rad2deg(
+                    np.abs(KM2M * dep1_mesh[this_mesh_els] / RADIUS_EARTH)
+                )
+                lon2_mesh[this_mesh_els] += np.sin(dip_dir) * np.rad2deg(
+                    np.abs(KM2M * dep2_mesh[this_mesh_els] / RADIUS_EARTH)
+                )
+                lat2_mesh[this_mesh_els] += np.cos(dip_dir) * np.rad2deg(
+                    np.abs(KM2M * dep2_mesh[this_mesh_els] / RADIUS_EARTH)
+                )
+                lon3_mesh[this_mesh_els] += np.sin(dip_dir) * np.rad2deg(
+                    np.abs(KM2M * dep3_mesh[this_mesh_els] / RADIUS_EARTH)
+                )
+                lat3_mesh[this_mesh_els] += np.cos(dip_dir) * np.rad2deg(
+                    np.abs(KM2M * dep3_mesh[this_mesh_els] / RADIUS_EARTH)
+                )
+
+        x1_mesh, y1_mesh = wgs84_to_web_mercator(lon1_mesh, lat1_mesh)
+        x2_mesh, y2_mesh = wgs84_to_web_mercator(lon2_mesh, lat2_mesh)
+        x3_mesh, y3_mesh = wgs84_to_web_mercator(lon3_mesh, lat3_mesh)
+
+        # Store data
+        data = {
+            "station": station,
+            "segment": segment,
+            "meshes": meshes,
+            "resmag": resmag,
+            "x_station": x_station,
+            "y_station": y_station,
+            "x1_seg": x1_seg,
+            "y1_seg": y1_seg,
+            "x2_seg": x2_seg,
+            "y2_seg": y2_seg,
+            "x1_mesh": x1_mesh,
+            "y1_mesh": y1_mesh,
+            "x2_mesh": x2_mesh,
+            "y2_mesh": y2_mesh,
+            "x3_mesh": x3_mesh,
+            "y3_mesh": y3_mesh,
+        }
+
+        if folder_number == 1:
+            self.folder_1_data = data
+        else:
+            self.folder_2_data = data
+
+        # Update visualization
+        self._update_layers()
+
+        print(f"Loaded data from {folder_name}")
 
     @controller.set("load_folder_1")
     def load_folder_1(self):
         """Load data from folder 1"""
-        # TODO: Implement file dialog and data loading
-        print("Load folder 1 clicked")
-        pass
+        self._load_data(1)
 
     @controller.set("load_folder_2")
     def load_folder_2(self):
         """Load data from folder 2"""
-        # TODO: Implement file dialog and data loading
-        print("Load folder 2 clicked")
+        self._load_data(2)
+
+    def _update_layers(self):
+        """Update DeckGL layers based on loaded data and visibility controls"""
+        # TODO: Implement layer creation and updates
+        # This will be implemented in the next phase
         pass
 
     @change("velocity_scale")
@@ -379,15 +569,32 @@ class MyTrameApp(TrameApp):
                         # RIGHT LARGE AREA - Map and Colorbars (grid cols 2-10, rows 0-8)
                         with vuetify3.VCol(cols=10, classes="pa-0 d-flex flex-column"):
                             # Main map area (rows 0-8)
-                            with vuetify3.VCard(classes="flex-grow-1", style="min-height: 0;"):
-                                html.Div(
-                                    "Map visualization will go here",
-                                    style="width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; background-color: #f5f5f5;",
+                            with vuetify3.VCard(classes="flex-grow-1", style="min-height: 0; position: relative;"):
+                                # DeckGL Map
+                                deck_map = deckgl.Deck(
+                                    mapbox_api_key=mapbox_access_token if HAS_MAPBOX_TOKEN else "",
+                                    style="width: 100%; height: 100%;",
+                                    classes="fill-height",
                                 )
+                                self.ctrl.deck_update = deck_map.update
+
+                                # Initialize map after UI is built
+                                self.server.controller.on_server_ready.add(self._initialize_map)
 
                             # Colorbar area (row 8)
-                            with vuetify3.VCard(classes="pa-2", height="50", flat=True):
+                            with vuetify3.VCard(classes="pa-2 d-flex justify-space-around align-center", height="50", flat=True):
+                                # Slip rate colorbar placeholder
                                 html.Div(
-                                    "Color bars will go here",
-                                    style="width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-size: 0.8rem;",
+                                    "Slip rate (mm/yr): -100 ←→ +100",
+                                    style="font-size: 0.75rem; color: #666;",
+                                )
+                                # Residual magnitude colorbar placeholder
+                                html.Div(
+                                    "Resid. mag. (mm/yr): 0 → 5",
+                                    style="font-size: 0.75rem; color: #666;",
+                                )
+                                # Residual diff colorbar placeholder
+                                html.Div(
+                                    "Resid. diff. (mm/yr): -5 ←→ +5",
+                                    style="font-size: 0.75rem; color: #666;",
                                 )
