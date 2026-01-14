@@ -1,7 +1,7 @@
+import os
 import numpy as np
 import pandas as pd
 from pathlib import Path
-import sys
 
 from trame.app import TrameApp
 from trame.decorators import change, controller
@@ -12,15 +12,23 @@ from trame.widgets import vuetify3, html
 import pydeck as pdk
 from trame_deckgl.widgets import deckgl
 
-# Import mapbox token
-try:
-    mapbox_token_path = Path(__file__).parent.parent.parent.parent / "result_viewer" / "mapbox_token.py"
-    sys.path.insert(0, str(mapbox_token_path.parent))
-    from mapbox_token import mapbox_access_token
-    HAS_MAPBOX_TOKEN = mapbox_access_token and mapbox_access_token != "INSERT_TOKEN_HERE"
-except ImportError:
-    mapbox_access_token = None
-    HAS_MAPBOX_TOKEN = False
+
+def _load_mapbox_token():
+    token = os.getenv("FENNEL_MAP_BOX_TOKEN")
+    if token:
+        return token
+    # Fallback: read from a local .env if present
+    for parent in Path(__file__).resolve().parents:
+        env_file = parent / ".env"
+        if env_file.is_file():
+            for line in env_file.read_text().splitlines():
+                if line.strip().startswith("FENNEL_MAP_BOX_TOKEN="):
+                    return line.split("=", 1)[1].strip()
+    return None
+
+
+mapbox_access_token = _load_mapbox_token()
+HAS_MAPBOX_TOKEN = bool(mapbox_access_token)
 
 
 # ---------------------------------------------------------

@@ -23,17 +23,30 @@ Run the application
 
     fennel
 
-Developement setup
+Mapbox token
 ----------------------------------------
 
-We recommend using uv for setting up and managing a virtual environement for your development.
+Set a Mapbox access token so base maps render with Mapbox styles. Either export it in your shell or place it in a local ``.env`` (already gitignored):
+
+.. code-block:: console
+
+    export FENNEL_MAP_BOX_TOKEN="YOUR_TOKEN_HERE"
+
+Or create a ``.env`` file in the project root containing::
+
+    FENNEL_MAP_BOX_TOKEN=YOUR_TOKEN_HERE
+
+Development setup
+----------------------------------------
+
+We recommend using uv for setting up and managing a virtual environment for your development.
 
 .. code-block:: console
 
     # Create venv and install all dependencies
     uv sync --all-extras --dev
 
-    # Activate environement
+    # Activate environment
     source .venv/bin/activate
 
     # Install commit analysis
