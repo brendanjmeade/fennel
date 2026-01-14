@@ -452,9 +452,8 @@ class MyTrameApp(TrameApp):
                 id=f"{layer_id_prefix}_shift_{folder_number}",
             ))
 
-        # Station locations (always show if any velocity is shown)
-        if any(vis.values()):
-            # Create DataFrame for station points
+        # Station locations (only when explicitly requested)
+        if self.state[f"show_locs_{folder_number}"]:
             station_df = pd.DataFrame({
                 "lon": station.lon.values,
                 "lat": station.lat.values,
