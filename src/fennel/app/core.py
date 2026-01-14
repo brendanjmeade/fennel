@@ -196,24 +196,15 @@ class MyTrameApp(TrameApp):
         self.state.map_pitch = 0
         self.state.map_bearing = 0
 
+        # One-time registration guard
+        self._ready_registered = False
+
         # build ui
         self._build_ui()
 
     def _initialize_map(self, **kwargs):
         """Initialize the map with default view"""
-        deck = pdk.Deck(
-            map_provider="mapbox" if HAS_MAPBOX_TOKEN else "carto",
-            map_style="mapbox://styles/mapbox/light-v9" if HAS_MAPBOX_TOKEN else pdk.map_styles.LIGHT,
-            initial_view_state=pdk.ViewState(
-                latitude=self.state.map_latitude,
-                longitude=self.state.map_longitude,
-                zoom=self.state.map_zoom,
-                pitch=self.state.map_pitch,
-                bearing=self.state.map_bearing,
-            ),
-            layers=[],
-        )
-        self.ctrl.deck_update(deck)
+        self.ctrl.deck_update(self._build_deck([]))
 
     def _load_data(self, folder_number):
         """Load earthquake data from a folder"""
@@ -369,8 +360,11 @@ class MyTrameApp(TrameApp):
         if self.folder_2_data is not None:
             layers.extend(self._create_layers_for_folder(2, self.folder_2_data))
 
-        # Update the deck
-        deck = pdk.Deck(
+        self.ctrl.deck_update(self._build_deck(layers))
+
+    def _build_deck(self, layers):
+        """Construct a Deck instance with current map settings and provided layers."""
+        return pdk.Deck(
             map_provider="mapbox" if HAS_MAPBOX_TOKEN else "carto",
             map_style="mapbox://styles/mapbox/light-v9" if HAS_MAPBOX_TOKEN else pdk.map_styles.LIGHT,
             initial_view_state=pdk.ViewState(
@@ -382,7 +376,6 @@ class MyTrameApp(TrameApp):
             ),
             layers=layers,
         )
-        self.ctrl.deck_update(deck)
 
     def _create_layers_for_folder(self, folder_number, data):
         """Create DeckGL layers for a specific folder's data"""
@@ -894,7 +887,9 @@ class MyTrameApp(TrameApp):
                                 self.ctrl.deck_update = deck_map.update
 
                                 # Initialize map after UI is built
-                                self.server.controller.on_server_ready.add(self._initialize_map)
+                                if not self._ready_registered:
+                                    self.server.controller.on_server_ready.add(self._initialize_map)
+                                    self._ready_registered = True
 
                             # Colorbar area (row 8)
                             with vuetify3.VCard(classes="pa-2 d-flex justify-space-around align-center", height="50", flat=True):
