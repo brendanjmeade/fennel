@@ -31,6 +31,34 @@ VELOCITY_SCALE = 1000
 KM2M = 1.0e3
 RADIUS_EARTH = 6371000
 
+# Per-layer colors (RGBA) and per-folder line widths, mirroring the legacy viewer
+TYPE_COLORS = {
+    1: {
+        "obs": [0, 0, 205, 255],
+        "mod": [205, 0, 0, 200],
+        "res": [205, 0, 205, 200],
+        "rot": [0, 205, 0, 200],
+        "seg": [0, 205, 205, 200],
+        "tde": [205, 133, 0, 200],
+        "str": [0, 128, 128, 200],
+        "mog": [128, 128, 128, 200],
+        "loc": [0, 0, 0, 220],
+    },
+    2: {
+        "obs": [0, 0, 205, 255],
+        "mod": [205, 0, 0, 200],
+        "res": [205, 0, 205, 200],
+        "rot": [0, 205, 0, 200],
+        "seg": [0, 205, 205, 200],
+        "tde": [205, 133, 0, 200],
+        "str": [0, 102, 102, 200],
+        "mog": [102, 102, 102, 200],
+        "loc": [0, 0, 0, 220],
+    },
+}
+
+LINE_WIDTHS = {1: 1, 2: 2}
+
 
 # ---------------------------------------------------------
 # Coordinate transformation utilities
@@ -52,6 +80,7 @@ def web_mercator_to_wgs84(x, y):
     return lon, lat
 
 
+# TODO: this may not be needed
 def normalize_longitude_difference(start_lon, end_lon):
     """
     Normalize end longitude to be in the same 360-degree range as start longitude.
@@ -355,24 +384,23 @@ class MyTrameApp(TrameApp):
         y_station = data["y_station"]
 
         # Get visibility state
-        show_locs = self.state[f"show_locs_{folder_number}"]
-        show_obs = self.state[f"show_obs_{folder_number}"]
-        show_mod = self.state[f"show_mod_{folder_number}"]
-        show_res = self.state[f"show_res_{folder_number}"]
-        show_rot = self.state[f"show_rot_{folder_number}"]
-        show_seg = self.state[f"show_seg_{folder_number}"]
-        show_tri = self.state[f"show_tri_{folder_number}"]
-        show_str = self.state[f"show_str_{folder_number}"]
-        show_mog = self.state[f"show_mog_{folder_number}"]
+        vis_keys = (
+            "show_locs",
+            "show_obs",
+            "show_mod",
+            "show_res",
+            "show_rot",
+            "show_seg",
+            "show_tri",
+            "show_str",
+            "show_mog",
+        )
+        vis = {k: self.state[f"{k}_{folder_number}"] for k in vis_keys}
 
-        # Color schemes for different folders
-        colors = {
-            1: [255, 0, 0, 180],      # Red for folder 1
-            2: [0, 0, 255, 180],      # Blue for folder 2
-        }
-        color = colors[folder_number]
+        colors = TYPE_COLORS[folder_number]
+        base_width = LINE_WIDTHS[folder_number]
 
-        def add_velocity_layer(layer_id_prefix, east_component, north_component, base_color):
+        def add_velocity_layer(layer_id_prefix, east_component, north_component, base_color, line_width):
             """Add base and -360 shifted velocity line layers using the same color."""
             velocity_scale = self.state.velocity_scale * VELOCITY_SCALE
             x_end = x_station + velocity_scale * east_component
@@ -400,7 +428,7 @@ class MyTrameApp(TrameApp):
                 get_source_position=["start_lon", "start_lat"],
                 get_target_position=["end_lon", "end_lat"],
                 get_color=base_color,
-                get_width=2,
+                get_width=line_width,
                 width_min_pixels=1,
                 id=f"{layer_id_prefix}_{folder_number}",
             ))
@@ -411,13 +439,13 @@ class MyTrameApp(TrameApp):
                 get_source_position=["start_lon", "start_lat"],
                 get_target_position=["end_lon", "end_lat"],
                 get_color=base_color,
-                get_width=2,
+                get_width=line_width,
                 width_min_pixels=1,
                 id=f"{layer_id_prefix}_shift_{folder_number}",
             ))
 
         # Station locations (always show if any velocity is shown)
-        if show_locs or show_obs or show_mod or show_res or show_rot or show_seg or show_tri or show_str or show_mog:
+        if any(vis.values()):
             # Create DataFrame for station points
             station_df = pd.DataFrame({
                 "lon": station.lon.values,
@@ -429,7 +457,7 @@ class MyTrameApp(TrameApp):
                 "ScatterplotLayer",
                 data=station_df,
                 get_position=["lon", "lat"],
-                get_fill_color=color,
+                get_fill_color=colors["loc"],
                 get_radius=3000,
                 radius_min_pixels=2,
                 radius_max_pixels=5,
@@ -438,76 +466,84 @@ class MyTrameApp(TrameApp):
             ))
 
         # Observed velocities
-        if show_obs:
+        if vis["show_obs"]:
             # Velocity data is in mm/yr, VELOCITY_SCALE converts to m/yr; Web Mercator uses meters
             add_velocity_layer(
                 "obs_vel",
                 station.east_vel.values,
                 station.north_vel.values,
-                color,
+                colors["obs"],
+                base_width,
             )
 
         # Modeled velocities
-        if show_mod:
+        if vis["show_mod"]:
             add_velocity_layer(
                 "mod_vel",
                 station.model_east_vel.values,
                 station.model_north_vel.values,
-                [color[0], color[1], color[2], 120],
+                colors["mod"],
+                base_width,
             )
 
         # Residual velocities
-        if show_res:
+        if vis["show_res"]:
             add_velocity_layer(
                 "res_vel",
                 station.model_east_vel_residual.values,
                 station.model_north_vel_residual.values,
-                [128, 0, 128, 180],
+                colors["res"],
+                base_width,
             )
 
         # Rotation velocities
-        if show_rot:
+        if vis["show_rot"]:
             add_velocity_layer(
                 "rot_vel",
                 station.model_east_vel_rotation.values,
                 station.model_north_vel_rotation.values,
-                [255, 165, 0, 180],
+                colors["rot"],
+                base_width,
             )
 
         # Segment elastic velocities
-        if show_seg:
+        if vis["show_seg"]:
             add_velocity_layer(
                 "seg_vel",
                 station.model_east_elastic_segment.values,
                 station.model_north_elastic_segment.values,
-                [0, 255, 0, 180],
+                colors["seg"],
+                base_width,
             )
 
         # TDE velocities
-        if show_tri:
+        if vis["show_tri"]:
             add_velocity_layer(
                 "tde_vel",
                 station.model_east_vel_tde.values,
                 station.model_north_vel_tde.values,
-                [0, 255, 255, 180],
+                colors["tde"],
+                base_width,
             )
 
         # Strain rate velocities
-        if show_str:
+        if vis["show_str"]:
             add_velocity_layer(
                 "str_vel",
                 station.model_east_vel_block_strain_rate.values,
                 station.model_north_vel_block_strain_rate.values,
-                [255, 255, 0, 180],
+                colors["str"],
+                base_width,
             )
 
         # Mogi velocities
-        if show_mog:
+        if vis["show_mog"]:
             add_velocity_layer(
                 "mog_vel",
                 station.model_east_vel_mogi.values,
                 station.model_north_vel_mogi.values,
-                [255, 0, 255, 180],
+                colors["mog"],
+                base_width,
             )
 
         # Fault segments
